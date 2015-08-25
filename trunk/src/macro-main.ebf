@@ -1,0 +1,977 @@
+;;;; $Id: macro-main.ebf 40 2012-05-29 16:25:39Z westerp $
+;;;;
+;;;; @encoding UTF-8
+;;;; @package Zozotez http://sylwester.no/zozotez/
+;;;; @author Pål Wester <pal.wester.bf@sylwester.no>
+;;;;
+;;;; Zozotez is free software: you can redistribute it and/or modify
+;;;; it under the terms of the GNU General Public License as published by
+;;;; the Free Software Foundation, either version 3 of the License, or
+;;;; (at your option) any later version.
+;;;;
+;;;; Zozotez is distributed in the hope that it will be useful,
+;;;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;;;; GNU General Public License for more details.
+;;;;
+;;;; You should have received a copy of the GNU General Public License
+;;;;
+;;;; eval/main loop implementation
+;;;; stack is not seeded with a read-eval-print
+
+{main
+  $ax &pc_push                  ; not interested in the last return
+  $ax = &lis_open_new_addr      ; new address
+  $ax &pc_push                  ; will become (apply eval x)
+  &lis_open_new_next            ; open it
+  &lis_set_type_quote           ; quote == apply
+  $fx 17+ &lis_set_car          ; 17=eval
+  $fx = &lis_get_addr_new       ; the address of read return and argument of eval
+  $fx(-$ex+$dx+)                ; make more copies
+  $ex &lis_set_cdr              ; eval arg cons
+  $dx &pc_push                  ; return from read
+  &lis_open_new_next            ; the actual cons
+  &lis_set_type_list            ; se type list (apply eval . ( NIL . NIL ))
+  $ax+ = &lis_get_addr_new      ; address of (apply read)
+  &lis_open_new_next            ; open it
+  &lis_set_type_quote           ; set apply
+  $fx 15+ &lis_set_car          ; cmd read
+  &lis_close                    ; finished seeding
+  while $ax is not null
+  (-
+    %ax &lis_open           ; open list element
+    $ax = &lis_get_type     ; get this element type
+    $bx+
+    switch $ax ;  cases '\0\1\2\3' using $bx,
+    (%ax-; \1
+      (%ax-; \2
+        (%ax-; \3
+          (%ax-; \4
+            (%ax(-)   match pre_apply keep %bx flag
+                      ;$cx|"Merde: pre-apply"
+                      ; check for 2 (quote), 3 (if), 4(macro), 5(lambda)
+                      ; then check for the range 6-17 (functions)
+                      ; then open car to:
+                      ; check type list
+                      ; then check its car for 4 [== push an eval of a new cons which is also pushed. then flag to do lambda/macro]
+                      ; then for 5
+                      ; no matches == raise
+                      %ax = &lis_get_car
+                      $ax--; NIL/T
+                      (%ax-; if not quote
+                        (%ax-; if not if
+                          (-(   ; if not macro or lambda
+                                ; we substract with num functions (12)
+                                $bx- ; temporarily remove flag
+                                $cx 12+
+                                &substract_left ; substract 12 from %ax without reducing ax below 0
+                                $bx+ ; put flag back
+                                $ax ((-) &preapply_list_defun_eval )
+                                $bx (- &generic_preapply_eval )
+                          )) $bx (-  &generic_defun_eval ) ; this is a l/m-expression deinition, not call.
+                        ) $bx (- &preapply_if_eval )
+                      ) $bx (- &quote_eval )
+            )
+              $bx ( match apply
+                    $ax = &lis_get_car
+                    $ex = &lis_get_cdr     ; open the
+                    &lis_close             ; next l-e
+                    $ex &lis_open          ; open cdr
+                    $dx &lis_get_type      ; type in ex
+                    $fx+
+                    $dx---
+                    if not list
+                    (
+                      (-) reset
+                      $fx- ; dotted pair or NIL, reset flag
+                      $ex+ ; dotted-pair/NIL-flag
+                    )
+
+                    ;; so anyway which function we have we have
+                    ;; NIL/dotted-pair-flag in fx and first argument open
+
+                    ;; (apply 2,4,5) could be used for internal
+                    ;; functions, like unbind of parameters
+                    $ax--; \2
+                    (%ax-; \3
+                      (%ax---; \6
+                        (%ax-; \7
+                          (%ax-; \8
+                            (%ax-; \9
+                              (%ax-; \10
+                                (%ax-; \11
+                                  (%ax-; \12
+                                    (%ax-; \13
+                                      (%ax-; \14
+                                        (%ax-; \15
+                                          (%ax-; \16
+                                            (%ax-; \17
+                                              ( &apply_list_defun_eval )
+                                                $bx (- &apply_evalx_eval  )
+                                            ) $bx (- &apply_print_eval )
+                                          ) $bx (- &apply_read_eval )
+                                        ) $bx (- $cx|"Merde: apply -" )
+                                      ) $bx (- $cx|"Merde: apply +" )
+                                    ) $bx (- &apply_cons_eval )
+                                  ) $bx (- &apply_cdr_eval )
+                                ) $bx (- &apply_car_eval )
+                              ) $bx (- $cx|"Merde: apply <" )
+                            ) $bx (- &apply_atom_eval )
+                          ) $bx (- &apply_eq_eval )
+                        ) $bx (- &apply_set_eval )
+                      ) $bx (- &apply_if_eval )
+                    ) $bx (- &apply_list_defun_cleanup )
+                  )
+           ) $bx (- &generic_list_eval )
+        ) $bx (- &symbol_to_reference )
+      ) $bx (- match number
+               $cx|"Merde: number"
+            )
+    ) $bx (- match available cell
+             $cx|"Merde: Evaluation of empty cell is"
+          )
+
+    ;; Check for fatal error
+    if $cx error flag set
+    ((-)
+      |" not supported.
+Sorry about that.
+Au revoir!
+"
+      do
+      ((-)
+      %cx = &pc_pop
+      ) while stack not empty
+      $dx(-)
+    )
+
+    &lis_close ; always close at end
+    $fx(-) ; in case return address is NIL
+
+    ;; pop next expression
+    ;; or use dx as expression
+    $ex+
+    $dx($ex-$dx(-$ax+))
+    $ex(- $ax = &pc_pop)
+    end of while eval
+  )
+  &lis_close
+  ; &lis_print
+}
+
+;;; evaluates a symbol
+;;; Tested ok
+{symbol_to_reference
+  $fx symbol = &lis_get_car
+  $ex = &pc_pop
+  if $ex- is not NIL ; in case return i NIL (as in a progn)
+  (
+    &lis_close
+    $ex &lis_open
+    $fx &sym_open
+    $fx+ ;  error flag
+    $ex  = &sym_get_assoc_ref
+    while $ex symbol
+    (-
+        %0symbol &lis_set_car
+        $fx- ; reset error flag
+    )
+    if $fx error flag set
+    (-
+        ;; This error is not fatal. result will be NIL
+        |"Merde: Unbound variable. Defaults to NIL
+"       (-)
+    )
+    &sym_close
+  )
+}
+
+;;; evaluates a generic expression (virgin)
+;;; makes (expr1 ... exprn) => (pre-apply expr1 .. exprn)
+{generic_list_eval
+    $dx+ = &lis_get_car         ; next expr in line
+    $ex = &lis_get_cdr          ; get next element
+    &lis_close                  ; gaps prevent from
+    $fx = &lis_open_new_addr    ; just openng new next
+    &lis_set_type_preapply
+    $ex &lis_set_cdr
+    $fx(-$ax+$bx+)
+    $bx &pc_push                ; once for the whole thing
+    $ax &pc_push                ; once for the return of $dx
+}
+
+;;; Both lambda/macro-expressions are returned unchanged
+;;; but the LIST returned is a pre-apply list.
+;;; If we are going to compile functions here is the place to do it.
+;;; Tested OK for return
+{generic_defun_eval
+    $fx = &lis_close_addr
+    $ex = &pc_pop
+    if return $ex- not NIL
+    (
+      &lis_open
+      $fx &lis_set_car
+    )
+}
+
+
+;;; pre-apply-generic
+;;; change from preapply to apply
+;;; push stack to evaluate all arguments
+;;; Tested OK for 0, 1, 2 and 3 arguments
+{generic_preapply_eval
+    $ex = &lis_get_cdr          ; this is the unevaluated argument list
+    &lis_upd_type_to_apply
+    $dx+ = &lis_get_addr
+    while $ex is not null
+    (
+      $dx- &pc_push              ; push this on stack as it will not be next
+      &lis_zero_cdr
+
+      ;; since apply is definitly lower than first available address
+      ;; we allow ourselfs to use get_addr_new.
+      $fx = &lis_get_addr_new
+      $fx(-$dx+$ax+)    ; in ax we have the address of the first parameter
+      $dx = &lis_set_cdr
+      &lis_open_new_next
+      &lis_set_type_list
+      &lis_close
+
+      while $ex is not null
+      (
+        $dx+                    ; we count how many params we have
+        $ex &lis_open           ; TODO: dotted pair protect?
+        $ex = &lis_get_car
+        $ex &stack_push
+        $ex = &lis_get_cdr
+        &lis_close
+      )
+      &lis_open_new
+      while $dx- is positive
+      (-
+        $ex = &stack_pop        ; get the expr
+        &lis_set_type_list      ; set type of new cons to list
+        $fx   &lis_set_cdr      ; put the cdr to the last open cell we had
+        $cx = &lis_get_addr     ; get the address of this (new) cons
+        &lis_open_new_next      ; open next new cons
+        $cx(-$bx+$fx+)          ; make copy for stack and next round
+        $bx &pc_push            ; push return cons
+        $ex- &pc_push           ; push expr
+      )
+      if $fx
+      (
+        &lis_close
+        $ax(-$bx+$cx+)
+        $bx(-$ax+)
+        $cx &lis_open
+        $fx &lis_set_cdr
+      )
+      $ax &pc_push
+      $dx = &stack_pop          ; next in line
+    )
+}
+;;; quote return the (cadr)
+;;; Tested OK for return
+{quote_eval
+    $fx = &lis_get_cdr
+    &lis_close
+    $fx = &lis_open
+    $fx = &lis_get_car
+    &lis_close
+    $ex = &pc_pop
+    if return $ex- not NIL
+    (
+      &lis_open
+      $fx &lis_set_car
+    )
+}
+
+
+;;; need to change from pre-apply to apply
+;;; and push evaluation of first argument
+;;; need testing
+{preapply_if_eval
+    $fx+ ; flag for NIL
+    $ex = &lis_get_cdr    paif ; get next element
+    if $ex is not NIL
+    (
+      &lis_upd_type_to_apply      ; change from pre-apply to apply
+      &lis_zero_cdr               ; remove reference to expr
+      $fx- = &lis_close_addr      ; fx now holds the addr of (apply if)
+      $ex   &lis_open             ; open the seond argument
+      $dx+ = &lis_get_car         ; what next to evaluate +1
+      $ex = &lis_get_cdr          ; the rest from the predicate cons
+      &lis_close
+      &lis_open_new               ; the new addes will be the cons of the first argument
+      &lis_set_type_list          ; set proper type
+      $ex &lis_set_cdr            ; connect new cons to the rest of the arguments
+      $ex = &lis_close_addr       ; close while getting new address
+      $fx(-$cx+$bx+)              ; make double copy of (apply if)
+      $bx &pc_push                ; push exp on stack
+      $cx &lis_open               ; open (apply if)
+      $ex(-$fx+$cx+)              ; make more copies of new cons address
+      $cx &pc_push                ; push as result address
+      $fx &lis_set_cdr            ; chain (apply if . (nil then else ))
+    )
+    else if $fx set
+    (-
+        $ax = &pc_pop ; get return address
+        $ax(-)        ; don't store it since its already NIL there
+    )
+}
+
+
+{preapply_list_defun_eval
+  ;; we have the first cons of something like (expr arg0 argn)
+  ;; where expr is not a primitive function. we need to open expr
+  ;; and we are only interseted if it is of type pre-apply AND
+  ;; car is one of 4 (macro) or 5 (lambda) everything else is an error
+
+  ;; operations in order prefixed with B (both), L (only lambda), M (only macro)
+  ;; L a = pc_pop
+  ;; M pc_push (apply eval . next_new) on stack
+  ;; M a = new cons, type L
+  ;; B pc_push a new cons (apply " . lambda-arglist) ; " won't happen in apply so we use it as UNBIND. This wont have return :)
+  ;; B pc_push a
+  ;; L set bx to 1 (to get parameters evaluated in the &generic_preapply_eval)
+  ;; M upd from pre-apply to apply and set address in dx (for next eval round)
+
+  ;; Next step (Apply code) is the same whether it is lambda or macro
+
+  $fx = &lis_get_car
+  $ex = &lis_close_addr
+  $fx = &lis_open
+  $ax = &lis_get_type ; this should be pre-apply
+  $ax 5-              ; then it will be zero now
+  if %ax is not zero ((-)$bx-)
+  $dx+  ; an error flag
+  if $bx is set
+  (
+      $fx = &lis_get_cdr ; the tail of the lambda/macro
+      ;; now get car to check lambda/macro
+      $ax &lis_get_car
+      $ax 4-    ; check for macro
+      if car was macro
+      (-
+        if car was lambda
+        ((-)$bx-
+        ) $bx (-$dx- lambda/expr
+                $cx = &pc_pop ; this should end up in ax
+                $ends+         ; this shoudl end up in cx, then bx
+              )
+      ) $bx (- macro/fexpr
+              &lis_close
+              $ax = &lis_open_new_addr
+              &lis_set_type_quote       ; apply
+              $dx 16+ &lis_set_car      ; 1 + 16 == eval
+              $bx = &lis_get_addr_new
+              $ax &pc_push              ; push it as next in line
+              $bx(-$dx+$ax+)            ; double copy of new cons
+              $ax+                      ; ax should have +1 since it's not popped
+              $dx &lis_set_cdr          ; set cdr, we have  (apply eval . next_new)
+              &lis_open_new_next        ; need to set type
+              &lis_set_type_list        ; on new cons as well
+            )
+       $ends(-$cx(-$ax+)+) ; when lambda we need to temporary store ax in something else
+  )
+  if $dx
+  (-
+    $cx|"Merde: undefined function is"
+  )
+  if $ax is set
+  (-
+    ;; this will happen for both lambda and macro
+    &lis_close
+    if $fx
+    (
+       %fx &lis_open
+       $bx &lis_get_type
+       $fx+
+       if $bx--- is ot zero implies nonlist
+       ((-) $fx-)
+       if $fx implies list
+       (-
+          $bx = &lis_get_car ; NIL/argument/argument-list
+       )
+       &lis_close
+    )
+    if $bx ; we have arguments and need to unbind
+    (
+      $fx = &lis_open_new_addr
+      &lis_set_type_quote         ; apply
+      $bx   &lis_set_cdr          ; set cdr to rest of lambda-expression
+      $bx   2+ &lis_set_car       ; apply quote == unbind
+      &lis_close                  ; close new cell
+      $fx &pc_push                ; this is an expression that does not have a return
+    )
+    $ex &lis_open               ; open original expression
+    $ax &pc_push                ; this is the return (arg for eval in macro)
+    $ax+; flag
+    if $cx (- $ax- $bx+ )       ; set bx to get args (and expr) evaluated as function
+    else $ax
+    (- ; macro. need to copy ex to ex and dx
+       &lis_upd_type_to_apply
+       $dx+ = &lis_get_addr
+    finished with preapply_list_defun_eval)
+  )
+}
+
+;;; Functions
+;;; All arguments are evaluated
+;;; so anyway which function we have we have
+;;; list-flag in fx and first argument open
+
+
+;;; This is called for both macro and lambda
+;;; This is because the differences between
+;;; them is performed by the pre-apply stage
+;;; This should do the binding then
+;;; push every next element on stack with
+;;; an NIL return for every non-last
+;;; expression (progn)
+;;;
+;;; a missing argument (eg. more in arglist than supplied)
+;;; should be interpreted as NIL (as other functions)
+;;; When arguments are a proper list and there are more supplied
+;;; those are not bound to anything.
+;;; When arguments is the empty list do no binding
+;;; When arguments is an atom (symbol( bind that symbol to all args supplied
+;;; When argument list ends in a dotted pair the last symbol is bound to the rest of the arguments
+{apply_list_defun_eval
+  $ex((-) &lis_close )+
+  $fx((-) ; if first argument element is not a list then we ignore it.
+      $ex = &lis_close_addr
+  )
+  $bx 3+(-$ax 4+) $ax+  restore original %ax
+  $ax   &lis_open ; open lambda-list
+  $fx = &lis_get_cdr
+  if $fx is set
+  (
+    &lis_close
+    $fx   &lis_open
+    $dx = &lis_get_cdr    ; the address to the function body
+    $fx = &lis_get_car    ; this is the args
+    while $fx is set do arg
+    (
+     ;; dx is off limits
+     ;; ex is list-element with data to be bound
+     &lis_close
+     $fx  &lis_open
+     $fx = &lis_get_type
+     $ex-
+     $cx = &lis_get_car
+     $ax+
+     $bx = &lis_get_cdr
+     if $fx-- not symbol
+     (-((-)$ax-$dx(-)$cx(-)|"Merde: function def with number argument")
+       $ax ( list
+             ;; it could happen we can fix thsi so that symbol code
+             ;; below does the last part?
+             &lis_close
+             $cx &lis_open
+             $fx = &lis_get_type
+             if $fx-- ((-)$ax-$cx|"Merde: non symbol argument")
+             else $ax indicates symbol
+             (
+               $fx = &lis_get_car
+               $fx &sym_open
+               &lis_close
+                if $ex
+                (
+                  %ex &lis_open
+                  $fx = &lis_get_type
+                  if $fx---((-)$ax-)
+                  else $ax
+                  (-
+                     $fx &lis_get_car
+                  )
+                )
+                $ex = &lis_get_cdr ; if it's NIL we get 0 anyway
+               ;; we now have new list element with argument in ex
+               ;; and what to bind in fx
+               ;; bx has next liste element to be processed
+               ;; dx is not to be touched
+               ;; we then only have a,c
+               $cx &sym_get_assoc_ref
+               if $cx is bound
+               (-
+                   &lis_close
+                   $ax = &lis_open_new_addr
+                   &lis_set_type_list
+                   $cx &lis_set_car
+                   $cx = &sym_get_plist_ref
+                   if $cx (- &lis_set_cdr )
+                   $ax &sym_zset_plist_ref
+               )
+               $fx &sym_zset_assoc_ref
+               $ax(-)
+             )
+           )
+     ) $ax (- symbol
+             ;; This means we bind this symbol to the rest of the arguments
+             $cx &sym_open
+             $cx &sym_get_assoc_ref
+             if $cx is bound
+             (-
+                 &lis_close
+                 $fx = &lis_open_new_addr
+                 &lis_set_type_list
+                 $cx &lis_set_car
+                 $ax = &sym_get_plist_ref
+                 if $ax (- &lis_set_cdr )
+                 $fx &sym_zset_plist_ref
+             )
+             $ex &sym_zset_assoc_ref
+           )
+     &sym_close
+     $bx(-$fx+)$ex+
+   )
+    while $dx is not NIL
+    (
+      $ex(-)+ ; we are finished with arguments
+      &lis_close
+      $dx  &lis_open
+      $dx = &lis_get_type ;; type of every element should be LIST
+      if $dx 3- is not zero
+      ((-)
+        $ex-
+      )
+      else $ex
+      (-
+          $dx = &lis_get_cdr
+          $fx = &lis_get_car
+          $fx &stack_push
+      )
+    )
+    $dx = &stack_pop
+    while $dx is NOT zero ; and zero is not the same as NIL!
+    (-
+        ;; fx is only set the 2..nth time around
+        ;; this is because we have a return on stack (this apply's return)
+        if $fx set
+        ((-)
+         %fx &pc_push ; push a NIL as return
+        )+
+        $dx &pc_push  ; push expr
+        $dx &stack_pop
+    )
+    $fx(-); reset fx
+  )
+  if $ex ; indicates NIL body == NIL return
+  (
+      %ex = &pc_pop
+      $ex(-)
+  )
+}
+
+;;; this undoes the bindings done by
+;;; apply_list_defun_eval
+{apply_list_defun_cleanup
+    ;; if ex is set we have dotted
+    ;; if fx set we have list
+    ;; we know we have at least one parameter
+    $ex(-)
+    $dx+ ; indicate rerun
+    (-
+      $dx = &lis_get_car ; either hash or symbol location
+      if $fx indicates list
+      (-
+         $cx &lis_get_cdr ; next in line to open
+         &lis_close
+         $dx &lis_open
+         $dx &lis_get_car
+      )
+      $dx &sym_open
+      $dx &sym_get_plist_ref
+      if $dx has plist
+      (-
+        &lis_close
+        $dx &lis_open
+        $dx = &lis_get_cdr
+        $bx+
+        if $dx ( %dx &sym_zset_plist_ref $bx- )
+        else $bx (- &sym_z_plist_ref )
+        $ax = &lis_get_car
+        &lis_zero_all ; free it
+      )
+      $bx+
+      if $ax (
+           %ax &sym_zset_assoc_ref
+           $bx-
+      ) else $bx (-
+          &sym_z_assoc_ref
+      )
+      &sym_close
+      if $cx (
+        &lis_close
+        $cx &lis_open
+        $fx = &lis_get_type
+        $fx-- ; if it's list it will be 1 0 if it's symbol :)
+        $dx+
+      )
+    )
+}
+
+
+;;; This actually just checks the second argument if it's
+;;; NIL its the (caddr) that needs evaluatiing or else (cadr)
+;;; Tested: OK
+{apply_if_eval
+  $fx(-)
+  $ex(-)++ ; %ex was 1, added 1, assume else
+  $fx = &lis_get_car
+  if $fx is not NIL
+  ((-)
+    $ex- ; change from else to then
+  )
+  ; %ex now has the number of cdr's to take
+  while $ex
+  (-
+    $dx+
+    $fx = &lis_get_cdr
+    if $fx
+    (
+      $dx-
+      &lis_close
+      $fx = &lis_open
+    )
+    else if $dx (- $cx+ $ex(-) )
+  )
+  %ex+
+  if $cx is set ; it means we have ecountered a NIL eg (if T) or (if NIL T)
+  (-
+      $ax = &pc_pop ; get return address
+      $ax(-)        ; don't store it since its already NIL there
+      $ex-
+  )
+  else if $ex
+  (-
+      ;; car here is either cadr (then) or (caddr) else
+      ;; anyway it's next in line for evaluation
+      $dx+ = &lis_get_car
+  )
+}
+
+
+;;; Implementation of atom
+;;; $ex contains a flag which is 1
+;;; if (cdr expr) IS NOT LIST (like NIL)
+;;; Tested OK
+{apply_atom_eval
+    if $fx
+    (-
+      $ex+
+      $fx = &lis_get_car     ; get car of first argument
+      &lis_close
+      $fx &lis_open
+      $fx = &lis_get_type
+      $fx-(-((-)$ex-))
+    )
+    $fx = &pc_pop
+    $fx-
+    (
+      &lis_close
+      $fx &lis_open
+      $ex   &lis_set_car
+    )
+    $ex(-)
+}
+
+;;; eq is not pointer equality in
+;;; Zozotez. This makes this function a
+;;; little harder than I imagined.
+;;; (eq) => T
+;;; (eq NIL) => T
+;;; (eq T) => NIL
+;;; (eq NIL NIL) => T
+;;; (eq 't 't) => T
+;;; (eq 't 'g) => NIL
+;;; (eq '(a b) 'e ) => NIL
+;;; (eq (cons T) (cons T)) => NIL
+;;; (eq (:'q '(w e r)) q) => T
+;;; Tested OK
+{apply_eq_eval
+  if $fx
+  (
+    $ex  = &lis_get_car ; element one to compare
+    $fx- = &lis_get_cdr
+    $dx+
+    $fx
+    (
+      &lis_close
+      $fx   &lis_open
+      $fx = &lis_get_type ; need to be list
+      if $fx--- is not list
+      ((-) $dx- $ex(-) )
+      else $dx
+      (
+        $fx = &lis_get_car  ; element two to compare
+        $ex(-$fx-$dx+)      ; cmp ex fx, remember dx has 1 already
+        if $fx is not zero
+        (
+          $dx-(-$fx+$ex+)   ; restore pointer addresses
+          &lis_close
+          $fx = &lis_open
+          $fx = &lis_get_type ; (eq expr 'symbol) maybe?
+          $fx(-$dx-$cx+)      ; dual copy of type of two
+          $cx-(-((-) not symbol $dx(-) $ex(-) ))
+          if $dx inidcates symbol or number
+          (
+            $bx = &lis_get_car
+            &lis_close
+            $ex   &lis_open
+            $dx   &lis_get_type ; %dx will be zero if same type
+            $ex+
+            if $dx is not zero
+            ((-)
+              $ex-
+              $fx(-)
+              $bx(-)
+            )
+            if $ex
+            (
+              $fx &lis_get_car
+              $bx(-$fx-)        ; fx will be zero if same car
+              if $fx is not zero
+              ((-)
+                $ex-
+              )
+              $ex(-$dx+)
+            )
+            $dx(-$ex+)
+          )
+        )
+        else $dx inidicates pointer equal
+        ((-) $ex+ )
+      )
+    )
+    if $dx indicate nilcdr
+    (-
+      $fx+
+      $ex((-) $fx-) ; NIL == NIL if ex is zero
+    )
+    $fx(-$ex+)
+  )
+  $fx = &pc_pop
+  else $ex
+  (-
+    if $fx- ; check for NIL (no return wanted)
+    (
+      &lis_close
+      $fx &lis_open
+      $fx+ &lis_set_car
+    )
+  )
+}
+
+
+;; (set a expr1 expr2)    => (set-car expr1 expr2)
+;; (set d expr1 expr2)    => (set-cdr expr1 expr2)
+;; (set 'symbol expr2)    => (setq symbol expr2)
+;; (set expr1 expr2)      => ERROR if expr1 does not evaluate to a  symbol
+{apply_set_eval
+  if $fx is not NIL
+  (
+     ; that means that (f . e) exists in our (: . (f . e))
+     $fx-  = &lis_get_cdr
+     $ex   = &lis_get_car
+     $ex(-$dx+$cx+)+
+
+     ;; TODO: We might use & (:), eg (: : expr replacement) to clone
+     ;;       a cons (no matter what type). It may be used to redefine
+     ;;       how predefined symbols are shown, like change NIL/T to
+     ;;       clojures false/true.
+     if $dx 10- is not a
+     (-
+       ( (-) ; not a or d, should now be symbol
+         &lis_close
+         $cx &lis_open
+         $ex- = &lis_get_type
+         $dx+ ; else flag
+         if $ex-- is not zero ((-) not symbol $dx- )+
+         if $dx indicates symbol
+         (-
+            $ex- = &lis_get_car ; get hash
+            $ex &sym_open
+            if $fx
+            (
+              $dx+
+              &lis_close
+              $fx &lis_open
+              $fx = &lis_get_type
+              $fx---((-)$dx-)
+              if $dx indicates list
+              (-
+                 $fx = &lis_get_car
+              )
+              $fx(-$dx+$bx+)
+            )
+            $dx &sym_zset_assoc_ref
+            &sym_close
+         )
+	 $ex (- $cx(-)|"Merde: first arg evaluated to non-symbol is")
+       )
+       $ex (- $cx(-)|"Merde: set-cdr" ))
+      $ex  (- $cx(-)|"Merde: set-car" )
+      $fx(-)
+  )
+  $fx = &pc_pop
+  else if $ex
+  (-
+    $fx(-)+
+    $cx(-)|"Merde: invalid (set ...)"
+  )
+  if $fx-
+  (
+      &lis_close
+      $fx &lis_open
+      $bx &lis_set_car
+  )
+  $bx(-)
+}
+
+
+;;; implements car
+{apply_car_eval
+  $ex(-) = &pc_pop
+  if $ex- is not NIL
+  (
+    if $fx
+    (-
+      $fx = &lis_get_car
+      if $fx
+      (
+        &lis_close
+        $fx &lis_open
+        $fx = &lis_get_car
+        &lis_close
+        $ex = &lis_open
+        $fx &lis_set_car
+      )
+    )
+    $ex(-)
+  )
+}
+
+;;; implements cdr
+;;; Not passed  (cdr) => NIL
+;;; Passed: (cdr 'a)=> NIL, (cdr ())
+{apply_cdr_eval
+  $ex(-) = &pc_pop
+  if $ex- is not NIL
+  (
+    if $fx
+    (-
+      $fx = &lis_get_car
+      if $fx
+      (
+        &lis_close
+        $fx &lis_open
+        $fx = &lis_get_cdr
+        &lis_close
+        $ex = &lis_open
+        $fx &lis_set_car
+      )
+    )
+    $ex(-)
+  )
+}
+
+;;; This reuses the cons created by
+;;; pre-eval if there were cons. If
+;;; we have (cons) it allocates a new
+;;; cons and return that instead.
+;;; Tested OK (c) (c 'a) (c 'a 'b) (c 'a '(b))
+{apply_cons_eval
+  if $fx is not NIL
+  (-
+    ;; NB: If we implement compiling this has to change
+    ;; since we are using the 'compiled' conses
+    $fx = &lis_get_cdr
+    &lis_zero_cdr
+    $dx = &lis_close_addr
+    if $fx is set
+    (
+      %fx &lis_open
+      $fx = &lis_get_type
+      $ex+
+      if $fx--- is not list ((-)$ex-)
+      else $ex
+      (-
+        $fx &lis_open
+        $fx = &lis_get_car
+        &lis_close
+        $dx = &lis_open
+        $fx &lis_set_cdr
+        $dx = &lis_close_addr
+      )
+    )
+  )
+  $fx = &pc_pop
+  if $fx- is not NIL
+  (
+    if $ex set ; NIL NIL
+    (-
+      &lis_close
+      $dx = &lis_open_new_addr
+      &lis_set_type_list
+    )
+    if $dx
+    (
+      &lis_close
+      $fx &lis_open
+      $dx &lis_set_car
+    )
+  )
+}
+
+;;; zozot_read dos set-car of return
+;;; This only have to clear the registers
+{apply_read_eval
+  &lis_close
+  $fx(-)
+  $ex(-)
+  $ax &zozot_read
+}
+
+;;; zozot_print prints
+;;; %bx. this makes sure
+;;; we return the value
+{apply_print_eval
+  if $fx is not NIL
+  (-
+    $cx = &lis_get_car
+    $ax++
+    $bx = &lis_get_cdr
+    if $bx is not NIL
+    ((-)
+      $ax--
+    )
+  )
+  $ex(-)
+  &lis_close
+  $cx(-$bx+$dx+)
+  $cx &pc_pop
+  if $cx- is not NIL
+  (
+    &lis_open
+    $dx  &lis_set_car
+    &lis_close
+  )
+  $dx(-) $ax &zozot_print
+}
+
+;; Simplest function on the planet
+;; just set cadr of expr in %dx for
+;; next evaluation
+{apply_evalx_eval
+  $dx+
+  if $fx
+  (-
+    $dx = &lis_get_car
+  )
+  else if $ex
+  (-
+    $fx = &pc_pop ; (eval NIL) => nil
+  )
+}
